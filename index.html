@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Умный Табель Учета</title>
+    <style>
+        :root { --border-color: #444; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; background: #f0f2f5; padding: 10px; }
+        .container { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        
+        h2 { text-align: center; color: #2c3e50; margin: 0 0 10px 0; }
+        
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; table-layout: fixed; }
+        th, td { border: 1px solid var(--border-color); padding: 2px; text-align: center; overflow: hidden; }
+        th { background: #f8f9fa; font-weight: bold; }
+        
+        .name-col { width: 160px; text-align: left; padding-left: 5px; }
+        .role-col { width: 110px; }
+        .day-col { width: 25px; }
+        .total-col { width: 45px; background: #fafafa; font-weight: bold; }
+
+        input, select { width: 100%; border: none; background: transparent; font-size: 11px; outline: none; height: 20px; }
+        input:focus { background: #fffde7; }
+        
+        .overtime-row { background: #f9fff9; color: #1b5e20; font-size: 10px; }
+        .overtime-row td:first-child { text-align: right; padding-right: 5px; font-style: italic; }
+
+        .controls { margin-bottom: 15px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: #e3f2fd; padding: 10px; border-radius: 5px; }
+        button { padding: 6px 10px; cursor: pointer; border-radius: 4px; border: 1px solid #90caf9; background: white; }
+        button:hover { background: #bbdefb; }
+        .btn-print { background: #2e7d32; color: white; border: none; font-weight: bold; }
+        .btn-del { color: #c62828; border: none; font-weight: bold; cursor: pointer; background: none; }
+        
+        .hidden-day { display: none; } /* Для скрытия лишних дней месяца */
+
+        @media print {
+            .controls, .btn-del { display: none !important; }
+            @page { size: landscape; margin: 5mm; }
+            body { padding: 0; background: white; }
+            .container { box-shadow: none; border: none; width: 100%; }
+            .hidden-day { display: none !important; }
+        }
+    </style>
+</head>
+<body id="app-body" style="display:none;">
+
+<div class="container">
+    <h2 id="tabel-title">Табель учета рабочего времени</h2>
+    
+    <div class="controls">
+        <label>Месяц: <input type="month" id="month-picker" onchange="updateCalendar()"></label>
+        <button onclick="addEmployee()">👤 Добавить сотрудника</button>
+        <button onclick="saveToLocal()">💾 Сохранить</button>
+        <button class="btn-print" onclick="window.print()">🖨️ Печать PDF</button>
+        <button onclick="clearAll()" style="margin-left: auto; color: red;">🧹 Очистить всё</button>
+    </div>
+
+    <table id="tabel-table">
+        <thead>
+            <tr id="days-header">
+                <th class="name-col">ФИО</th>
+                <th class="role-col">Должность</th>
+                <script>
+                    for(let i=1; i<=31; i++) document.write(`<th class="day-col d-cell-${i}">${i}</th>`);
+                </script>
+                <th class="total-col">Смен</th>
+                <th class="total-col">Перер.</th>
+            </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+    </table>
+</div>
+
+<script>
+    const PASS = "2538"; 
+    const ROLES = ["ст.бармен", "звукооператор", "официант", "бармен", "бариста", "горничная"];
+
+    function init() {
+        if (prompt("Пароль:") !== PASS) { window.location.reload(); return; }
+        document.getElementById('app-body').style.display = 'block';
+        
+        // Устанавливаем текущий месяц по умолчанию
+        const now = new Date();
+        const monthVal = now.toISOString().substring(0, 7);
+        document.getElementById('month-picker').value = monthVal;
+
+        loadFromLocal();
+        updateCalendar();
+    }
+
+    function updateCalendar() {
+        const picker = document.getElementById('month-picker').value; // "YYYY-MM"
+        if (!picker) return;
+        
+        const year = parseInt(picker.split('-')[0]);
+        const month = parseInt(picker.split('-')[1]);
+        const daysInMonth = new Date(year, month, 0).getDate();
+
+        // Скрываем или показываем колонки в зависимости от кол-ва дней
+        for (let i = 1; i <= 31; i++) {
+            const cells = document.querySelectorAll(`.d-cell-${i}`);
+            cells.forEach(c => {
+                if (i > daysInMonth) c.classList.add('hidden-day');
+                else c.classList.remove('hidden-day');
+            });
+        }
+
+        // Обновляем заголовок
+        const monthNames = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+        document.getElementById('tabel-title').innerText = `Табель: ${monthNames[month-1]} ${year}`;
+        
+        calculate();
+    }
+
+    function addEmployee(savedData = null) {
+        const tbody = document.getElementById('table-body');
+        const id = Date.now() + Math.random();
+        let roleOptions = ROLES.map(r => `<option value="${r}" ${savedData?.role === r ? 'selected' : ''}>${r}</option>`).join('');
+
+        // Строка смен
+        const row = document.createElement('tr');
+        row.className = 'main-row';
+        row.dataset.id = id;
+        
+        let daysHtml = '';
+        for (let i = 1; i <= 31; i++) {
+            let val = (savedData && savedData.shifts) ? (savedData.shifts[i-1] || '') : '';
+            daysHtml += `<td class="day-col d-cell-${i}"><input type="text" class="d-in" value="${val}" oninput="calculate()"></td>`;
+        }
+
+        row.innerHTML = `
+            <td class="name-col"><button class="btn-del" onclick="removeRow('${id}')">×</button>
+                <input type="text" class="e-name" value="${savedData?.name || ''}" placeholder="ФИО"></td>
+            <td class="role-col"><select class="e-role">${roleOptions}</select></td>
+            ${daysHtml}
+            <td class="total-shifts total-col">0</td>
+            <td class="total-overtime total-col" rowspan="2">0</td>
+        `;
+
+        // Строка переработки
+        const otRow = document.createElement('tr');
+        otRow.className = 'overtime-row';
+        otRow.dataset.id = id;
+        let otDaysHtml = '';
+        for (let i = 1; i <= 31; i++) {
+            let val = (savedData && savedData.ots) ? (savedData.ots[i-1] || '') : '';
+            otDaysHtml += `<td class="day-col d-cell-${i}"><input type="text" class="o-in" value="${val}" oninput="calculate()"></td>`;
+        }
+        otRow.innerHTML = `<td colspan="2">Доп. часы →</td>${otDaysHtml}`;
+
+        tbody.appendChild(row);
+        tbody.appendChild(otRow);
+        updateCalendar();
+    }
+
+    function calculate() {
+        document.querySelectorAll('.main-row').forEach(row => {
+            const id = row.dataset.id;
+            const otRow = document.querySelector(`.overtime-row[data-id="${id}"]`);
+            
+            let sCount = 0;
+            row.querySelectorAll('.d-in').forEach(i => {
+                // Считаем смену только если ячейка не скрыта и заполнена
+                if (i.value.trim() !== "" && !i.parentElement.classList.contains('hidden-day')) sCount++;
+            });
+            row.querySelector('.total-shifts').innerText = sCount;
+
+            let oHours = 0;
+            otRow.querySelectorAll('.o-in').forEach(i => {
+                if (!i.parentElement.classList.contains('hidden-day')) {
+                    oHours += parseFloat(i.value.replace(',','.')) || 0;
+                }
+            });
+            row.querySelector('.total-overtime').innerText = oHours;
+        });
+    }
+
+    function saveToLocal() {
+        const data = {
+            month: document.getElementById('month-picker').value,
+            employees: []
+        };
+        document.querySelectorAll('.main-row').forEach(row => {
+            const id = row.dataset.id;
+            const otRow = document.querySelector(`.overtime-row[data-id="${id}"]`);
+            data.employees.push({
+                name: row.querySelector('.e-name').value,
+                role: row.querySelector('.e-role').value,
+                shifts: Array.from(row.querySelectorAll('.d-in')).map(i => i.value),
+                ots: Array.from(otRow.querySelectorAll('.o-in')).map(i => i.value)
+            });
+        });
+        localStorage.setItem('tabel_smart_data', JSON.stringify(data));
+        alert("Данные за " + data.month + " сохранены!");
+    }
+
+    function loadFromLocal() {
+        const saved = localStorage.getItem('tabel_smart_data');
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            if (parsed.month) document.getElementById('month-picker').value = parsed.month;
+            if (parsed.employees) parsed.employees.forEach(emp => addEmployee(emp));
+        }
+    }
+
+    function removeRow(id) {
+        if(confirm("Удалить?")) {
+            document.querySelectorAll(`[data-id="${id}"]`).forEach(el => el.remove());
+            calculate();
+        }
+    }
+
+    function clearAll() {
+        if(confirm("Очистить все данные?")) {
+            localStorage.clear();
+            location.reload();
+        }
+    }
+
+    window.onload = init;
+</script>
+</body>
+</html>
